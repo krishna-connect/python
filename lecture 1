@@ -1,0 +1,145 @@
+ Web Data, Log and Simple Returns, and Portfolio Math
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+%config InlineBackend.figure_format = 'retina'
+%precision 4
+pd.options.display.float_format = '{:.4f}'.format
+
+### The yfinance Package
+
+import yfinance as yf
+import requests_cache
+session = requests_cache.CachedSession(expire_after=1)
+
+tickers = yf.Tickers(tickers='MSFT GOOG TSLA AMZN NVDA AAPL', session=session)
+histories = tickers.history(period='max', auto_adjust=False, progress=False)
+histories.index = histories.index.tz_localize(None)
+histories
+
+( 
+    histories # start with MATANA data frame
+    ['Adj Close'] # slice adjusted close columns
+    .pct_change() # calculate simple returns
+    .loc['2022'] # select 2022 returns
+    .add(1) # add 1
+    .cumprod() # compound cumulative returns
+    .sub(1) # subtract 1
+    .mul(100) # convert decimals to percent
+    .plot() # plot
+)
+plt.ylabel('Year-to-Date Return (%)')
+plt.title('Year-to-Date Returns for MATANA Stocks')
+plt.show()
+
+### The pandas-datareader package
+
+import pandas_datareader as pdr
+
+pdr.famafrench.get_available_datasets(session=session)[:5]
+
+For Fama and French data, pandas-datareader returns the most recent five years of data unless we specify a `start` date.
+French typically provides data back through the second half of 1926.
+pandas-datareader returns dictionaries of data frames, and the `'DESCR'` value describes these data frames.
+
+ff_all = pdr.DataReader(
+    name='F-F_Research_Data_Factors_daily',
+    data_source='famafrench',
+    start='1900', 
+    session=session
+)
+
+print(ff_all['DESCR'])
+
+(
+    ff_all[0]
+    .div(100)
+    .add(1)
+    .cumprod()
+    .sub(1)
+    .mul(100)
+    .plot()
+)
+plt.ylabel('Cumulative Return (%)')
+plt.title('Cumulative Returns for the Daily Benchmark Factors (%)')
+plt.gca().yaxis.set_major_formatter(plt.matplotlib.ticker.StrMethodFormatter('{x:,.0f}'))
+plt.show()
+
+## Log and Simple Returns
+
+### Simple and Log Returns are Similar for Small Returns
+
+$\log(1 + x) \approx x$ for small values of $x$, so simple returns and log returns are similar for small returns.
+Returns are typically small at daily and monthly horizons, so the difference between simple and log returns is small at these horizons.
+The following figure shows $R_{simple,t} \approx R_{log,t}$ for small $R$s.
+
+R = np.linspace(-0.75, 0.75, 100)
+logR = np.log(1 + R)
+
+plt.plot(R, logR)
+plt.plot([-1, 1], [-1, 1])
+plt.xlabel('Simple Return')
+plt.ylabel('Log Return')
+plt.title('Log Versus Simple Returns')
+plt.legend(['Actual', 'If Log = Simple'])
+plt.show()
+
+The following code generates 10,000 random log returns.
+The `np.random.randn()` call generates normally distributed random numbers.
+To generate equivalent simple returns, we exponentiate these log returns, then subtract one.
+
+np.random.seed(42)
+df = pd.DataFrame(data={'R': np.exp(np.random.randn(10000)) - 1})
+
+df.describe()
+
+%%timeit
+df['R12_via_simple'] = (
+    df['R']
+    .add(1)
+    .rolling(12)
+    .apply(lambda x: x.prod())
+    .sub(1)
+)
+
+%%timeit
+df['R12_via_log'] = (
+    df['R']
+    .add(1)
+    .pipe(np.log)
+    .rolling(12)
+    .sum()
+    .pipe(np.exp)
+    .sub(1)
+)
+
+np.allclose(df['R12_via_simple'], df['R12_via_log'], equal_nan=True)
+
+***We can use log returns to calculate total or holding period returns very quickly!***
+
+## Portfolio Math
+
+### The 1/N Portfolio
+
+returns = histories['Adj Close'].pct_change().loc['2022']
+
+returns
+
+returns.mean()
+
+rp_1 = returns.mean(axis=1)
+rp_1
+
+### A More General Solution
+
+weights = np.ones(returns.shape[1]) / returns.shape[1]
+weights
+
+rp_2 = returns.dot(weights)
+rp_2
+
+Both approaches give the same answer!
+
+np.allclose(rp_1, rp_2, equal_nan=True)
