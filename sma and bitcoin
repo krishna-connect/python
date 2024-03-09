@@ -1,0 +1,279 @@
+# Herron Topic 2 - Practice (Wednesday 2:45 PM, Section 2)
+
+## Announcements
+
+##  Practice
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+%config InlineBackend.figure_format = 'retina'
+%precision 4
+pd.options.display.float_format = '{:.4f}'.format
+
+### Implement the SMA(20) strategy with Bitcoin from the lecture notebook
+
+import yfinance as yf
+
+btc = (
+    yf.download(tickers='BTC-USD', progress=False)
+    .assign(
+        Date = lambda x: x.index.tz_localize(None),
+    )
+    .set_index('Date')
+    .rename_axis(columns='Variable')
+)
+
+btc.head()
+
+def sma(df, n=20):
+    return (
+        df
+        .assign(
+            Return = lambda x: x['Adj Close'].pct_change(),
+            SMA = lambda x: x['Adj Close'].rolling(n).mean(),
+            Position = lambda x: np.select(
+                condlist=[
+                    x['Adj Close'].shift() > x['SMA'].shift(), 
+                    x['Adj Close'].shift() <= x['SMA'].shift()
+                ],
+                choicelist=[
+                    1, 
+                    0
+                ],
+                default=np.nan
+            ),
+            Strategy = lambda x: x['Position'] * x['Return']
+        )
+    )
+
+
+btc_sma = btc.pipe(sma, n=20)
+
+btc_sma.tail()
+
+_ = btc_sma[['Return', 'Strategy']].dropna()
+
+(
+    _
+    .add(1)
+    .cumprod()
+    .rename_axis(columns='Strategy')
+    .rename(columns={'Return': 'Buy-And-Hold', 'Strategy': 'SMA(20)'})
+    .plot()
+)
+plt.ylabel('Value ($)')
+plt.title(f'Value of $1 Invested at Close on {_.index[0] - pd.offsets.Day(1):%B %d, %Y}')
+plt.show()
+
+### How does SMA(20) outperform buy-and-hold with this sample?
+
+By chance, the SMA(20) strategy avoids all but three of the worst days.
+
+btc_sma.sort_values('Return')[['Position']].head(20).value_counts()
+
+However, SMA(20) does not avoid the best days, again by chance.
+
+btc_sma.sort_values('Return', ascending=False)[['Position']].head(20).value_counts()
+
+btc_sma.groupby('Position')[['Return', 'Strategy']].agg(['mean', 'std'])
+
+The SMA(20) strategy has a slight edge in picking high-return days, again by chance.
+
+(
+    btc_sma
+    .assign(q5_return = lambda x: 1 + pd.qcut(x['Return'], q=5, labels=False))
+    .groupby('q5_return')
+    ['Position']
+    .mean()
+    .plot(kind='bar')
+)
+
+plt.xticks(rotation=0)
+plt.xlabel('Return Bin (1 is Lowest, 5 is Highest)')
+plt.ylabel('Fraction of Days Strategy is Long Bitcoin')
+plt.title('Mean Position by Return Bin')
+plt.show()
+
+However, the SMA(20) *does* avoid the high volatility days that create [volatility drag](https://www.kitces.com/blog/volatility-drag-variance-drain-mean-arithmetic-vs-geometric-average-investment-returns/).
+
+(
+    btc_sma
+    .assign(
+        Volatility = lambda x: x['Return'].rolling(63).std(),
+        q5_volatility = lambda x: 1 + pd.qcut(x['Volatility'], q=5, labels=False)
+    )
+    .groupby('q5_volatility')
+    ['Position']
+    .mean()
+    .plot(kind='bar')
+)
+
+plt.xticks(rotation=0)
+plt.xlabel('63-Day Rolling Volatility Bin (1 is Lowest, 5 is Highest)')
+plt.ylabel('Fraction of Days Strategy is Long Bitcoin')
+plt.title('Mean Position by 63-Day Rolling Volatility Bin')
+plt.show()
+
+Recall that $Arith\ Mean \approx Geom\ Mean + \frac{\sigma^2}{2}$, so avoiding high volatility (high variance) days, reduced the drag on the  cumulative returns that intermediate-term and long-term investors care about!
+
+(
+    btc_sma
+    .groupby('Position')
+    ['Return']
+    .agg(['std', 'mean', lambda x: (1 + x).prod()**(1 / x.count()) - 1])
+    .mul(100)
+    .rename(columns={'std': 'Volatility', 'mean': 'Arith Mean', '<lambda_0>': 'Geom Mean'})
+)
+
+### Implement the SMA(20) strategy with the market factor from French
+
+We need to impute a market price before we calculate SMA(20).
+
+import pandas_datareader as pdr
+import requests_cache
+session = requests_cache.CachedSession()
+
+ff = (
+    pdr.DataReader(
+        name='F-F_Research_Data_Factors_daily',
+        data_source='famafrench',
+        start='1900',
+        session=session
+    )
+    [0]
+    .div(100)
+    .assign(
+        Mkt = lambda x: x['Mkt-RF'] + x['RF'],
+        Price = lambda x: x['Mkt'].add(1).cumprod()
+    )
+)
+
+ff_sma = (
+    ff
+    .rename(columns={'Price': 'Adj Close'})
+    .pipe(sma, n=20)
+)
+
+ff_sma.tail()
+
+_ = ff_sma[['Return', 'Strategy']].dropna()
+
+(
+    _
+    .add(1)
+    .cumprod()
+    .rename_axis(columns='Strategy')
+    .rename(columns={'Return': 'Buy-And-Hold', 'Strategy': 'SMA(20)'})
+    .plot()
+)
+plt.ylabel('Value ($)')
+plt.title(f'Value of $1 Invested in Market at Close on {_.index[0] - pd.offsets.Day(1):%B %d, %Y}')
+plt.show()
+
+### How often does SMA(20) outperform buy-and-hold with 10-year rolling windows?
+
+(
+    ff_sma
+    [['Return', 'Strategy']]
+    .rolling(10 * 252)
+    .apply(lambda x: (1 + x).prod())
+    .rename_axis(columns='Strategy')
+    .rename(columns={'Return': 'Buy-And-Hold', 'Strategy': 'SMA(20)'})
+    .plot()
+)
+plt.ylabel('Value ($)')
+plt.title(f'Value of $1 Investments for Rolling 10-Year Holding Periods ')
+plt.show()
+
+In the previous example, SMA(20) looks amazing!
+But over many shorter holding periods, we see the two are comparable.
+This is largely because the SMA(20) strategy *by pure chance* avoids big market draw downs!
+
+ff_sma.sort_values('Return')[['Position', 'Return', 'Strategy']].head(10)
+
+SMA(20) also avoids the up days.
+However, for this sample, missing the extreme down days helps more than missing the extreme updays hurts.
+
+ff_sma.sort_values('Return', ascending=False)[['Position', 'Return', 'Strategy']].head(10)
+
+We can also think about this problem by decade.
+If we want to get proper calendar decades (instead of 10-year periods that start in 1926), we combine `.groupby()` with an anonymous function that converts the date-time index to a proper calendar decade.
+Again, we see that SMA(20) and buy-and-hold trade wins, but SMA(20) wins bigs in the 1930s!
+
+(
+    ff_sma
+    [['Return', 'Strategy']]
+    .groupby(lambda x: f'{(x.year // 10) * 10}s')
+    .apply(lambda x: (1 + x).prod())
+    .rename_axis(index='Decade', columns='Strategy')
+    .rename(columns={'Return': 'Buy-And-Hold', 'Strategy': 'SMA(20)'})
+    .plot(kind='bar')
+)
+plt.xticks(rotation=0)
+plt.ylabel('Value ($)')
+plt.title(f'Value of $1 Investments Add End of 10-Year Holding Periods ')
+plt.show()
+
+In fact, buy-and-hold outperforms SMA(20) is we start in 1950.
+
+_ = ff_sma.loc['1950':, ['Return', 'Strategy']].dropna()
+
+(
+    _
+    .add(1)
+    .cumprod()
+    .rename_axis(columns='Strategy')
+    .rename(columns={'Return': 'Buy-And-Hold', 'Strategy': 'SMA(20)'})
+    .plot()
+)
+plt.ylabel('Value ($)')
+plt.title(f'Value of $1 Invested in Market at Close on {_.index[0] - pd.offsets.Day(1):%B %d, %Y}')
+plt.show()
+
+### Implement a long-only BB(20, 2) strategy with Bitcoin
+
+def bb(df, n=20, m=2):
+    return (
+        df
+        .assign(
+            Return = lambda x: x['Adj Close'].pct_change(),
+            SMA = lambda x: x['Adj Close'].rolling(n).mean(),
+            SMV = lambda x: x['Adj Close'].rolling(n).std(),
+            UB = lambda x: x['SMA'] + m*x['SMV'],
+            LB = lambda x: x['SMA'] - m*x['SMV'],
+            Position_with_nan = lambda x: np.select(
+                condlist=[
+                    (x['Adj Close'].shift(1) > x['LB'].shift(1)) & (x['Adj Close'].shift(2) <= x['LB'].shift(2)), 
+                    (x['Adj Close'].shift(1) < x['UB'].shift(1)) & (x['Adj Close'].shift(2) >= x['UB'].shift(2))
+                ],
+                choicelist=[
+                    1, 
+                    0
+                ],
+                default=np.nan
+            ),
+            Position = lambda x: x['Position_with_nan'].fillna(method='ffill'),
+            Strategy = lambda x: x['Position'] * x['Return']
+        )
+    )
+
+
+btc_bb = btc.pipe(bb, n=20, m=2)
+
+btc_bb.tail()
+
+_ = btc_bb[['Return', 'Strategy']].dropna()
+
+(
+    _
+    .add(1)
+    .cumprod()
+    .rename_axis(columns='Strategy')
+    .rename(columns={'Return': 'Buy-And-Hold', 'Strategy': 'BB(20, 2)'})
+    .plot()
+)
+plt.ylabel('Value ($)')
+plt.title(f'Value of $1 Invested at Close on {_.index[0] - pd.offsets.Day(1):%B %d, %Y}')
+plt.show()
