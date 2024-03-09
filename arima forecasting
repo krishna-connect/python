@@ -1,0 +1,152 @@
+# How to Forecast a Time Series with Python
+
+This notebook is replicated from Jose Portilla's blog https://medium.com/@josemarcialportilla/using-python-and-auto-arima-to-forecast-seasonal-time-series-90877adff03c
+
+import pandas as pd
+import numpy as np
+
+# Visualization
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Visualization
+from IPython.core.interactiveshell import InteractiveShell
+InteractiveShell.ast_node_interactivity = "all"
+
+#This is a configuration setting for IPython notebooks (like Jupyter Notebooks).
+
+pd.set_option('display.max_columns', 200)
+pd.set_option('display.max_colwidth', 400)
+
+sns.set(context='notebook', style='whitegrid', rc={"figure.figsize": (18,4)})
+
+
+%matplotlib inline
+%config InlineBackend.figure_format = 'retina'
+
+from matplotlib import rcParams
+rcParams['figure.figsize'] = 18,4
+
+# to get rid of the unnecessary statsmodels package warnings
+# import warnings
+# warnings.filterwarnings("ignore")
+
+# setting random seed for notebook reproducability
+rnd_seed=42
+np.random.seed=rnd_seed
+np.random.set_state=rnd_seed
+
+## Processing the Data
+We'll need to do some quick processing to convert this data to have a time series index. Luckily Pandas makes this easy, let's quickly check the head of the data (the first 5 rows) to see what default format it comes in:
+
+data = pd.read_csv("F:/python/outside/electric-production.csv")
+data.head()
+
+Right now our index is actually just a list of auto-generated numbers, we'll want to adjust these to be timestamps, that way our forecasting analysis will be able to interpret these values:
+
+data['DATE'] = pd.to_datetime(data['DATE'])
+
+pd.to_datetime() is a Pandas function that converts an argument (in this case, the 'DATE' column of the DataFrame) to datetime.
+
+data.set_index(keys=['DATE'], drop=True, inplace=True)
+
+inplace=True makes the change in the DataFrame itself without the need to assign the result to a new variable.
+If inplace were set to False (or omitted, as False is the default value), the operation would return a new DataFrame with the change, leaving the original DataFrame unaffected.
+
+Let's also rename this column since its hard to remember what "IPG2211A2N" code stands for:
+
+data.columns = ['Energy_Production']
+
+data.head()
+
+**Missing Values:** Let's first make sure that the data doesn't have any missing data points:
+
+data[pd.isnull(data['Energy_Production'])]
+
+### Visualize the Time Series:
+
+data.plot()
+plt.title("Energy Production Jan 1985 to Jan 2018");
+
+from statsmodels.tsa.seasonal import seasonal_decompose
+decomposition = seasonal_decompose(data, model='multiplicative')
+
+fig = decomposition.plot()
+fig.set_figwidth(12)
+fig.set_figheight(8)
+fig.suptitle('Decomposition of multiplicative time series');
+
+From the plot above we can clearly see the seasonal component of the data, and we can also see the separated upward trend of the data.
+
+Trends can be upward or downward, and can be linear or non-linear. It is important to understand your data set to know whether or not a significant period of time has passed to identify an actual trend.
+
+Irregular fluctuations are abrupt changes that are random and unpredictable.
+
+from pyramid.arima import auto_arima
+
+stepwise_model = auto_arima(data, start_p=1, start_q=1,
+                           max_p=3, max_q=3, m=12,
+                           start_P=0, seasonal=True,
+                           d=1, D=1, trace=True,
+                           error_action='ignore',  
+                           suppress_warnings=True, 
+                           stepwise=True) 
+
+stepwise_model.aic()
+
+train = data.loc['1985-01-01':'2014-12-01']
+
+train.tail()
+
+test = data.loc['2015-01-01':]
+
+test.head()
+
+test.tail()
+
+## Train the Model
+We can then train the model by simply calling `.fit` on the stepwise model and passing in the training data:
+
+len(train), len(test)
+
+stepwise_model.fit(train)
+
+## Evaluation
+Now that the model has been fitted to the training data, we can forecast into the future. Recall that our test data set is from 2015-01-01 all the way to 2018-01-01. So if we check the length of our test data we get 37 rows, or 37 time periods. That is the value we will use for our `.predict()` method call:
+
+test_predictions = stepwise_model.predict(n_periods=37)
+
+test_predictions
+
+Let's reorganize this set of predictions by creating a dataframe that contains our future forecast and then concatenating that with the original data.
+
+We can then plot this to view how well our prediction forecast matched up with the test set for which we have the real data:
+
+test_predictions = pd.DataFrame(test_predictions, index=test.index, columns=['Prediction'])
+
+test_predictions.head()
+
+test.head()
+
+pd.concat([test, test_predictions], axis=1).plot();
+
+We can also just compare this to the entire data set to get a larger picture of the context of our prediction.
+
+pd.concat([data, test_predictions], axis=1).plot();
+
+## Next Steps
+Now that we've evaluated our data on the test set and our satisfied with the performance, the next step would be to refit our model to our entire data set and then forecast into the real future. We will predict in future for 36 months.
+
+future_forecast = stepwise_model.fit(data).predict(n_periods=36)
+
+data.index
+
+future_index = pd.date_range(start=data.index[-1] + pd.DateOffset(months=1), periods=36, freq='MS')
+future_index
+
+future_forecast = pd.DataFrame(future_forecast, index=future_index, columns=['Prediction'])
+
+pd.concat([data, future_forecast], axis=1).tail()
+
+pd.concat([data, future_forecast], axis=1).plot();
+
